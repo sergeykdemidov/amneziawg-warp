@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 if [ "$EUID" -ne 0 ]; then
     echo "ОШИБКА: нужен root. Запускай: sudo $0" >&2
@@ -29,5 +30,8 @@ ip route flush table "$AWG_TABLE" 2>/dev/null || true
 ip route del "$SERVER_IP/32" 2>/dev/null || true
 
 awg-quick down awg0 2>/dev/null || true
+
+sysctl -w net.ipv6.conf.all.disable_ipv6=0     > /dev/null
+sysctl -w net.ipv6.conf.default.disable_ipv6=0 > /dev/null
 
 echo "awg0: down"

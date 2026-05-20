@@ -8,12 +8,14 @@
 
 | Файл | Назначение |
 |---|---|
-| `server.sh` | Установка и настройка сервера (один раз) |
-| `config.sh` | Список сайтов и подсетей для туннелирования |
-| `client-setup.sh` | Установка клиента: резолвит IP, сохраняет кэш |
+| `server-setup.sh` | Установка и настройка сервера (один раз) |
+| `server-add-client.sh` | Добавить нового клиента на сервере |
+| `server-restart.sh` | Перезапустить стек на сервере |
+| `client-setup.sh` | Настройка клиента: резолвит IP, сохраняет кэш |
 | `client-up.sh` | Поднять туннель |
 | `client-down.sh` | Опустить туннель |
-| `awg-state.json` | Локальный кэш: ключи + все маршруты _(не в git)_ |
+| `client-route-config.conf` | Список сайтов и подсетей для туннелирования |
+| `awg-state.json` | Локальный кэш: ключи + параметры + маршруты _(не в git)_ |
 
 ---
 
@@ -23,7 +25,7 @@
 
 На сервере:
 ```bash
-sudo bash server.sh
+sudo bash server-setup.sh
 ```
 
 В конце скрипт выведет команду — скопируй её целиком.
@@ -32,13 +34,18 @@ sudo bash server.sh
 
 На клиентской машине, в папке проекта — вставь скопированную команду:
 ```bash
-sudo CLIENT_PRIV="<ключ>" SERVER_PUB="<ключ>" SERVER_IP="<IP>" bash client-setup.sh
+sudo CLIENT_PRIV="<ключ>" SERVER_PUB="<ключ>" SERVER_IP="<IP>" CLIENT_IP="<IP>" \
+     AWG_PORT="<порт>" AWG_JC="<n>" AWG_JMIN="<n>" AWG_JMAX="<n>" \
+     AWG_S1="<n>" AWG_S2="<n>" \
+     AWG_H1="<n>" AWG_H2="<n>" AWG_H3="<n>" AWG_H4="<n>" \
+     bash client-setup.sh
 ```
 
 Скрипт:
 - установит недостающие пакеты (`amneziawg`, `jq`, `dnsutils`)
-- резолвит все домены из `config.sh` в IP-адреса
+- резолвит все домены из `client-route-config.conf` в IP-адреса
 - загрузит диапазоны Google (YouTube)
+- добавит DNS-серверы (1.1.1.1, 8.8.8.8) в маршруты
 - сохранит всё в `awg-state.json`
 
 ### 3. Поднять туннель
@@ -46,6 +53,17 @@ sudo CLIENT_PRIV="<ключ>" SERVER_PUB="<ключ>" SERVER_IP="<IP>" bash clie
 ```bash
 sudo ./client-up.sh
 ```
+
+---
+
+## Добавить второго и последующих клиентов
+
+На сервере:
+```bash
+sudo bash server-add-client.sh
+```
+
+Скрипт назначит следующий свободный IP (10.8.0.3, 10.8.0.4, ...), добавит пир без перезапуска AWG и выведет команду для нового клиента. Далее — шаги 2–3 выше.
 
 ---
 
@@ -60,18 +78,18 @@ sudo ./client-down.sh   # выключить туннель
 
 ## Добавить сайт или подсеть
 
-Открой `config.sh` и добавь в нужный массив:
+Открой `client-route-config.conf` и добавь в нужный массив:
 
-```bash
+```
 SITES=(
-    "rutracker.org"
-    "new-site.com"      # ← добавил
+    rutracker.org
+    new-site.com
     ...
 )
 
 SUBNETS=(
-    "52.85.49.0/24"
-    "1.2.3.0/24"        # ← добавил
+    52.85.49.0/24
+    1.2.3.0/24
     ...
 )
 ```
@@ -79,7 +97,7 @@ SUBNETS=(
 Затем пересоздай кэш и перезапусти туннель:
 
 ```bash
-sudo ./client-setup.sh          # ключи берёт из кэша автоматически
+sudo ./client-setup.sh          # ключи и параметры берёт из кэша автоматически
 sudo ./client-down.sh
 sudo ./client-up.sh
 ```
@@ -88,12 +106,23 @@ sudo ./client-up.sh
 
 ## Если сменился сервер
 
-Запусти `server.sh` на новом сервере, скопируй команду и выполни её — ключи и IP обновятся:
+Запусти `server-setup.sh` на новом сервере, скопируй команду и выполни её — ключи, IP и параметры обфускации обновятся:
 
 ```bash
-sudo CLIENT_PRIV="<новый>" SERVER_PUB="<новый>" SERVER_IP="<новый>" bash client-setup.sh
+sudo CLIENT_PRIV="<новый>" SERVER_PUB="<новый>" SERVER_IP="<новый>" CLIENT_IP="<новый>" \
+     AWG_PORT="<порт>" ... bash client-setup.sh
 sudo ./client-down.sh && sudo ./client-up.sh
 ```
+
+---
+
+## Перезапуск сервера
+
+```bash
+sudo bash server-restart.sh
+```
+
+Скрипт останавливает AWG и tun2socks, проверяет WARP (переподключает при необходимости), затем поднимает стек в правильном порядке и выводит итоговый статус.
 
 ---
 
@@ -105,10 +134,12 @@ Netbird/корпоративный VPN → (ip rule не совпал) → ра�
 Остальной трафик → default gateway → как обычно
 ```
 
-- `Table = off` в конфиге WireGuard — awg-quick не трогает маршруты
+- `Table = off` в конфиге AWG — awg-quick не трогает маршруты
 - `client-up.sh` создаёт таблицу `200` с `default dev awg0`
 - Для каждого IP из кэша добавляется `ip rule to <IP> lookup 200 pref 50`
-- Только совпадающий трафик идёт через туннель
+- DNS-серверы (1.1.1.1, 8.8.8.8) тоже маршрутизируются через туннель
+- IPv6 отключается при подъёме туннеля и включается обратно при опускании
+- Параметры обфускации AWG (H1-H4, S1/S2, порт) генерируются случайно при установке сервера
 
 ---
 
@@ -125,6 +156,7 @@ wc -l /run/awg0-routes.list
 ip rule show | grep pref 50 | head -5
 ip route get 104.21.32.39   # пример: rutracker.org
 
-# Логи awg-quick
+# Логи
 journalctl -u awg-quick@awg0 -n 30
+journalctl -u tun2socks -n 30
 ```

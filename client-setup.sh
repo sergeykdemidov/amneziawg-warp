@@ -19,17 +19,38 @@ RULES_FILE=/run/awg0-routes.list
 
 if [ -n "$CLIENT_PRIV" ] && [ -n "$SERVER_PUB" ] && [ -n "$SERVER_IP" ]; then
     echo "  Ключи получены из переменных окружения"
+    CLIENT_IP="${CLIENT_IP:-10.8.0.2}"
 elif [ -f "$STATE_FILE" ]; then
     echo "  Ключи берём из кэша ($STATE_FILE)"
     CLIENT_PRIV=$(jq -r '.client_priv' "$STATE_FILE")
     SERVER_PUB=$(jq -r '.server_pub'  "$STATE_FILE")
     SERVER_IP=$(jq -r '.server_ip'   "$STATE_FILE")
+    CLIENT_IP=$(jq -r '.client_ip // "10.8.0.2"' "$STATE_FILE")
 else
     echo "ОШИБКА: ключи не заданы и кэш не найден. Запускай командой от сервера." >&2
     exit 1
 fi
 
-source "$SCRIPT_DIR/config.sh"
+if [ -n "$AWG_PORT" ]; then
+    echo "  AWG-параметры получены из переменных окружения"
+elif [ -f "$STATE_FILE" ] && [ "$(jq -r '.awg_port // empty' "$STATE_FILE")" != "" ]; then
+    echo "  AWG-параметры берём из кэша ($STATE_FILE)"
+    AWG_PORT=$(jq -r '.awg_port'  "$STATE_FILE")
+    AWG_JC=$(jq -r '.awg_jc'    "$STATE_FILE")
+    AWG_JMIN=$(jq -r '.awg_jmin'  "$STATE_FILE")
+    AWG_JMAX=$(jq -r '.awg_jmax'  "$STATE_FILE")
+    AWG_S1=$(jq -r '.awg_s1'    "$STATE_FILE")
+    AWG_S2=$(jq -r '.awg_s2'    "$STATE_FILE")
+    AWG_H1=$(jq -r '.awg_h1'    "$STATE_FILE")
+    AWG_H2=$(jq -r '.awg_h2'    "$STATE_FILE")
+    AWG_H3=$(jq -r '.awg_h3'    "$STATE_FILE")
+    AWG_H4=$(jq -r '.awg_h4'    "$STATE_FILE")
+else
+    echo "ОШИБКА: AWG-параметры не заданы. Используй команду от сервера." >&2
+    exit 1
+fi
+
+source "$SCRIPT_DIR/client-route-config.conf"
 
 # ── 1. Установка ─────────────────────────────────────────────
 echo "[1/3] Проверка и установка пакетов..."
@@ -96,6 +117,9 @@ for subnet in "${SUBNETS[@]}"; do
     ROUTES+=("$subnet")
 done
 
+ROUTES+=("1.1.1.1/32")
+ROUTES+=("8.8.8.8/32")
+
 echo "  Загружаем диапазоны Google (YouTube)..."
 mapfile -t google < <(curl -s --max-time 15 "https://www.gstatic.com/ipranges/goog.txt" | grep -E '^[0-9.]+\/')
 ROUTES+=("${google[@]}")
@@ -115,21 +139,43 @@ jq -n \
     --arg      server_ip   "$SERVER_IP"   \
     --arg      server_pub  "$SERVER_PUB"  \
     --arg      client_priv "$CLIENT_PRIV" \
+    --arg      client_ip   "$CLIENT_IP"   \
     --arg      gateway     "$DEFAULT_GW"  \
     --arg      iface       "$DEFAULT_IF"  \
     --argjson  awg_table   "$AWG_TABLE"   \
     --argjson  awg_prio    "$AWG_PRIO"    \
     --arg      rules_file  "$RULES_FILE"  \
+    --argjson  awg_port    "$AWG_PORT"    \
+    --argjson  awg_jc      "$AWG_JC"      \
+    --argjson  awg_jmin    "$AWG_JMIN"    \
+    --argjson  awg_jmax    "$AWG_JMAX"    \
+    --argjson  awg_s1      "$AWG_S1"      \
+    --argjson  awg_s2      "$AWG_S2"      \
+    --argjson  awg_h1      "$AWG_H1"      \
+    --argjson  awg_h2      "$AWG_H2"      \
+    --argjson  awg_h3      "$AWG_H3"      \
+    --argjson  awg_h4      "$AWG_H4"      \
     --argjson  routes      "$ROUTES_JSON" \
     '{
         server_ip:   $server_ip,
         server_pub:  $server_pub,
         client_priv: $client_priv,
+        client_ip:   $client_ip,
         gateway:     $gateway,
         iface:       $iface,
         awg_table:   $awg_table,
         awg_prio:    $awg_prio,
         rules_file:  $rules_file,
+        awg_port:    $awg_port,
+        awg_jc:      $awg_jc,
+        awg_jmin:    $awg_jmin,
+        awg_jmax:    $awg_jmax,
+        awg_s1:      $awg_s1,
+        awg_s2:      $awg_s2,
+        awg_h1:      $awg_h1,
+        awg_h2:      $awg_h2,
+        awg_h3:      $awg_h3,
+        awg_h4:      $awg_h4,
         routes:      $routes
     }' > "$STATE_FILE"
 

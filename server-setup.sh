@@ -162,6 +162,18 @@ SERVER_PRIV=$(awg genkey)
 SERVER_PUB=$(echo "$SERVER_PRIV" | awg pubkey)
 CLIENT_PRIV=$(awg genkey)
 CLIENT_PUB=$(echo "$CLIENT_PRIV" | awg pubkey)
+CLIENT_IP="10.8.0.2"
+
+AWG_PORT=$(shuf -i 10000-65000 -n 1)
+AWG_JC=$(shuf -i 3-7 -n 1)
+AWG_JMIN=$(shuf -i 30-60 -n 1)
+AWG_JMAX=$(shuf -i 61-120 -n 1)
+AWG_S1=$(shuf -i 20-80 -n 1)
+AWG_S2=$(shuf -i 20-80 -n 1)
+AWG_H1=$(shuf -i 100000000-999999999 -n 1)
+AWG_H2=$(shuf -i 100000000-999999999 -n 1)
+AWG_H3=$(shuf -i 100000000-999999999 -n 1)
+AWG_H4=$(shuf -i 100000000-999999999 -n 1)
 
 EXT_IF=$(ip route | grep "^default" | awk '{print $5}' | head -1)
 SSH_PORT=$(ss -tlnp | grep sshd | awk '{print $4}' | rev | cut -d: -f1 | rev | head -1)
@@ -171,25 +183,23 @@ SERVER_IP=$(curl -s --max-time 5 ifconfig.me || curl -s --max-time 5 api.ipify.o
 echo "  Внешний интерфейс : $EXT_IF"
 echo "  SSH порт          : $SSH_PORT"
 echo "  Сервер IP         : $SERVER_IP"
+echo "  AWG порт          : $AWG_PORT"
 
-# КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ:
-# PostUp не вызывает systemctl — только прямые команды ip
-# Это устраняет deadlock когда сервис ждёт сам себя
 cat > /etc/amnezia/amneziawg/awg0.conf << EOF
 [Interface]
 PrivateKey = $SERVER_PRIV
 Address = 10.8.0.1/24
-ListenPort = 51820
+ListenPort = $AWG_PORT
 SaveConfig = false
-Jc = 4
-Jmin = 40
-Jmax = 70
-S1 = 15
-S2 = 25
-H1 = 12345678
-H2 = 87654321
-H3 = 11223344
-H4 = 44332211
+Jc = $AWG_JC
+Jmin = $AWG_JMIN
+Jmax = $AWG_JMAX
+S1 = $AWG_S1
+S2 = $AWG_S2
+H1 = $AWG_H1
+H2 = $AWG_H2
+H3 = $AWG_H3
+H4 = $AWG_H4
 
 PostUp = iptables -A FORWARD -i awg0 -j ACCEPT; iptables -A FORWARD -o awg0 -j ACCEPT; iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o $EXT_IF -j MASQUERADE; iptables -t mangle -A PREROUTING -i awg0 -p udp --dport 53 -j MARK --set-mark 53; iptables -t mangle -A PREROUTING -i awg0 -p tcp --dport 53 -j MARK --set-mark 53; ip rule add fwmark 53 table main pref 95 2>/dev/null || true; ip route add default dev warp0 table 100 2>/dev/null || true; ip rule add from 10.8.0.0/24 table 100 pref 100 2>/dev/null || true; ip rule add to 10.8.0.0/24 table main pref 99 2>/dev/null || true
 
@@ -197,7 +207,7 @@ PostDown = iptables -D FORWARD -i awg0 -j ACCEPT; iptables -D FORWARD -o awg0 -j
 
 [Peer]
 PublicKey = $CLIENT_PUB
-AllowedIPs = 10.8.0.2/32
+AllowedIPs = $CLIENT_IP/32
 EOF
 chmod 600 /etc/amnezia/amneziawg/awg0.conf
 
@@ -300,5 +310,10 @@ echo ""
 echo "  sudo CLIENT_PRIV=\"$CLIENT_PRIV\" \\"
 echo "       SERVER_PUB=\"$SERVER_PUB\" \\"
 echo "       SERVER_IP=\"$SERVER_IP\" \\"
+echo "       CLIENT_IP=\"$CLIENT_IP\" \\"
+echo "       AWG_PORT=\"$AWG_PORT\" \\"
+echo "       AWG_JC=\"$AWG_JC\" AWG_JMIN=\"$AWG_JMIN\" AWG_JMAX=\"$AWG_JMAX\" \\"
+echo "       AWG_S1=\"$AWG_S1\" AWG_S2=\"$AWG_S2\" \\"
+echo "       AWG_H1=\"$AWG_H1\" AWG_H2=\"$AWG_H2\" AWG_H3=\"$AWG_H3\" AWG_H4=\"$AWG_H4\" \\"
 echo "       bash client-setup.sh"
 echo ""
