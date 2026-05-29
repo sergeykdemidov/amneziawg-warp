@@ -42,7 +42,6 @@ cat > "$CONF_DIR/awg0.conf" << EOF
 [Interface]
 PrivateKey = $CLIENT_PRIV
 Address = $CLIENT_IP/24
-DNS = 1.1.1.1, 8.8.8.8
 SaveConfig = false
 Table = off
 Jc = $AWG_JC
@@ -85,4 +84,56 @@ while read -r route; do
     fi
 done < <(jq -r '.routes[]' "$STATE_FILE")
 
-echo "awg0: up | маршрутов: $(wc -l < "$RULES_FILE")"
+ROUTE_COUNT=$(wc -l < "$RULES_FILE")
+echo "awg0: up | маршрутов: $ROUTE_COUNT"
+
+echo ""
+echo "--- Диагностика ---"
+ERRORS=0
+
+for i in $(seq 1 10); do
+    if awg show awg0 | grep -q "latest handshake"; then
+        HANDSHAKE=$(awg show awg0 | awk '/latest handshake/{print $3, $4, $5, $6}')
+        echo "  ✓ AWG handshake: $HANDSHAKE"
+        break
+    fi
+    if [ "$i" -eq 10 ]; then
+        echo "  ✗ AWG handshake не произошёл (туннель не установлен)"
+        ERRORS=$((ERRORS+1))
+    fi
+    sleep 1
+done
+
+if ip rule show | grep -q "lookup $AWG_TABLE"; then
+    echo "  ✓ Policy rules: $(ip rule show | grep -c "lookup $AWG_TABLE") правил в таблице $AWG_TABLE"
+else
+    echo "  ✗ Policy rules не найдены"
+    ERRORS=$((ERRORS+1))
+fi
+
+DNS_SERVER=$(grep -m1 '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}')
+if host -W 3 rutracker.org "$DNS_SERVER" &>/dev/null 2>&1; then
+    echo "  ✓ DNS ($DNS_SERVER): работает"
+else
+    echo "  ✗ DNS ($DNS_SERVER): не отвечает"
+    ERRORS=$((ERRORS+1))
+fi
+
+CHECK_HOST="rutracker.org"
+CHECK_IP=$(jq -r '.routes[] | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/32$"))' "$STATE_FILE" | head -1 | cut -d/ -f1)
+if [ -n "$CHECK_IP" ]; then
+    if curl -s --max-time 5 --interface awg0 "https://$CHECK_HOST" -o /dev/null -w "%{http_code}" 2>/dev/null | grep -qE "^[23]"; then
+        echo "  ✓ TCP через туннель ($CHECK_HOST): OK"
+    else
+        echo "  ✗ TCP через туннель ($CHECK_HOST): нет ответа"
+        ERRORS=$((ERRORS+1))
+    fi
+fi
+
+if [ "$ERRORS" -eq 0 ]; then
+    echo ""
+    echo "✓ Туннель работает"
+else
+    echo ""
+    echo "✗ Есть проблемы ($ERRORS). Проверь: awg show awg0 | journalctl -u awg-quick@awg0"
+fi
