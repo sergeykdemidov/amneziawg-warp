@@ -10,6 +10,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_FILE="$SCRIPT_DIR/awg-state.json"
 CONF_DIR=/etc/amnezia/amneziawg
 
+# Полный туннель: FULL_TUNNEL=1 — весь трафик через awg0 (для сайтов с ротацией
+# IP, напр. Deezer). NETBIRD_FWMARK — метка underlay NetBird, его трафик и LAN
+# остаются на реальном WAN. Приоритеты правил > 110, чтобы не мешать NetBird.
+FULL_TUNNEL="${FULL_TUNNEL:-0}"
+NETBIRD_FWMARK="${NETBIRD_FWMARK:-0x1bd00}"
+AWG_FT_MARK_PRIO=9998
+AWG_FT_MAIN_PRIO=9999
+AWG_FT_DEF_PRIO=10000
+
 if [ ! -f "$STATE_FILE" ]; then
     echo "ОШИБКА: $STATE_FILE не найден. Запусти client-setup.sh" >&2
     exit 1
@@ -78,14 +87,26 @@ ip route flush table "$AWG_TABLE" 2>/dev/null || true
 ip route add default dev awg0 table "$AWG_TABLE"
 
 > "$RULES_FILE"
-while read -r route; do
-    if ip rule add to "$route" lookup "$AWG_TABLE" pref "$AWG_PRIO" 2>/dev/null; then
-        echo "$route" >> "$RULES_FILE"
-    fi
-done < <(jq -r '.routes[]' "$STATE_FILE")
+if [ "$FULL_TUNNEL" = "1" ]; then
+    # Полный туннель. Порядок правил (по приоритету):
+    #   9998  underlay NetBird (по fwmark) -> реальный WAN (main)
+    #   9999  конкретные маршруты main (LAN, docker, endpoint /32) важнее дефолта
+    #   10000 весь остальной трафик -> awg0
+    # NetBird overlay (pref 110, table netbird) и его правила не трогаем.
+    ip rule add fwmark "$NETBIRD_FWMARK" lookup main pref "$AWG_FT_MARK_PRIO"
+    ip rule add from all lookup main suppress_prefixlength 0 pref "$AWG_FT_MAIN_PRIO"
+    ip rule add from all lookup "$AWG_TABLE" pref "$AWG_FT_DEF_PRIO"
+    echo "awg0: up | режим: ПОЛНЫЙ ТУННЕЛЬ (весь трафик через awg0, кроме LAN/NetBird)"
+else
+    while read -r route; do
+        if ip rule add to "$route" lookup "$AWG_TABLE" pref "$AWG_PRIO" 2>/dev/null; then
+            echo "$route" >> "$RULES_FILE"
+        fi
+    done < <(jq -r '.routes[]' "$STATE_FILE")
 
-ROUTE_COUNT=$(wc -l < "$RULES_FILE")
-echo "awg0: up | маршрутов: $ROUTE_COUNT"
+    ROUTE_COUNT=$(wc -l < "$RULES_FILE")
+    echo "awg0: up | режим: split | маршрутов: $ROUTE_COUNT"
+fi
 
 echo ""
 echo "--- Диагностика ---"
@@ -111,6 +132,25 @@ else
     ERRORS=$((ERRORS+1))
 fi
 
+if [ "$FULL_TUNNEL" = "1" ]; then
+    if ip route get 9.9.9.9 2>/dev/null | grep -q "dev awg0"; then
+        echo "  ✓ Полный туннель: внешний трафик идёт через awg0"
+    else
+        echo "  ✗ Полный туннель: внешний трафик НЕ идёт через awg0"
+        ERRORS=$((ERRORS+1))
+    fi
+    EXIT_INFO=$(curl -s --max-time 6 https://ipinfo.io/json 2>/dev/null | jq -r '"\(.ip) (\(.country))"' 2>/dev/null)
+    [ -n "$EXIT_INFO" ] && [ "$EXIT_INFO" != "null (null)" ] && echo "  ℹ Внешний IP: $EXIT_INFO"
+    if command -v netbird >/dev/null 2>&1; then
+        if netbird status 2>/dev/null | grep -q "Management: Connected"; then
+            echo "  ✓ NetBird: Management Connected (не сломан)"
+        else
+            echo "  ✗ NetBird: Management не подключён — проверь!"
+            ERRORS=$((ERRORS+1))
+        fi
+    fi
+fi
+
 DNS_SERVER=$(grep -m1 '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}')
 if host -W 3 rutracker.org "$DNS_SERVER" &>/dev/null 2>&1; then
     echo "  ✓ DNS ($DNS_SERVER): работает"
@@ -121,7 +161,7 @@ fi
 
 CHECK_HOST="rutracker.org"
 CHECK_IP=$(jq -r '.routes[] | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/32$"))' "$STATE_FILE" | head -1 | cut -d/ -f1)
-if [ -n "$CHECK_IP" ]; then
+if [ "$FULL_TUNNEL" != "1" ] && [ -n "$CHECK_IP" ]; then
     if curl -s --max-time 5 --interface awg0 "https://$CHECK_HOST" -o /dev/null -w "%{http_code}" 2>/dev/null | grep -qE "^[23]"; then
         echo "  ✓ TCP через туннель ($CHECK_HOST): OK"
     else

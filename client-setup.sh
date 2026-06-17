@@ -124,15 +124,21 @@ echo "  Загружаем диапазоны Google (YouTube)..."
 mapfile -t google < <(curl -s --max-time 15 "https://www.gstatic.com/ipranges/goog.txt" | grep -E '^[0-9.]+\/')
 ROUTES+=("${google[@]}")
 
+echo "  Загружаем диапазоны AWS CloudFront (JetBrains Marketplace, Zencoder)..."
+mapfile -t cloudfront < <(curl -s --max-time 20 "https://ip-ranges.amazonaws.com/ip-ranges.json" | jq -r '.prefixes[] | select(.service=="CLOUDFRONT") | .ip_prefix')
+ROUTES+=("${cloudfront[@]}")
+
 echo "  Итого маршрутов: ${#ROUTES[@]}"
 
 # ── 3. Запись state ───────────────────────────────────────────
 echo "[3/3] Сохранение конфигурации..."
 
+ROUTES_FILE=$(mktemp)
+trap 'rm -f "$ROUTES_FILE"' EXIT
 if [ ${#ROUTES[@]} -gt 0 ]; then
-    ROUTES_JSON=$(printf '%s\n' "${ROUTES[@]}" | jq -R . | jq -s .)
+    printf '%s\n' "${ROUTES[@]}" | jq -R . | jq -s . > "$ROUTES_FILE"
 else
-    ROUTES_JSON='[]'
+    echo '[]' > "$ROUTES_FILE"
 fi
 
 jq -n \
@@ -155,7 +161,7 @@ jq -n \
     --argjson  awg_h2      "$AWG_H2"      \
     --argjson  awg_h3      "$AWG_H3"      \
     --argjson  awg_h4      "$AWG_H4"      \
-    --argjson  routes      "$ROUTES_JSON" \
+    --slurpfile routes_wrap "$ROUTES_FILE" \
     '{
         server_ip:   $server_ip,
         server_pub:  $server_pub,
@@ -176,7 +182,7 @@ jq -n \
         awg_h2:      $awg_h2,
         awg_h3:      $awg_h3,
         awg_h4:      $awg_h4,
-        routes:      $routes
+        routes:      $routes_wrap[0]
     }' > "$STATE_FILE"
 
 chmod 600 "$STATE_FILE"
