@@ -31,7 +31,12 @@ echo "  ✓ готово"
 # ── 2. Пакеты ────────────────────────────────────────────────
 echo "[2/8] Установка пакетов..."
 apt update -qq
-apt install -y amneziawg iptables curl wget iproute2 unzip
+apt install -y software-properties-common iptables curl wget iproute2 unzip
+if ! apt-cache show amneziawg &>/dev/null; then
+    add-apt-repository ppa:amnezia/ppa -y
+    apt update -qq
+fi
+apt install -y amneziawg
 
 if ! command -v warp-cli &>/dev/null; then
     curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
@@ -62,7 +67,14 @@ echo "  tun2socks: $(tun2socks --version 2>&1 | head -1)"
 
 # ── 3. WARP ──────────────────────────────────────────────────
 echo "[3/8] Настройка WARP..."
-warp-cli registration delete 2>/dev/null || true
+systemctl enable --now warp-svc 2>/dev/null || true
+for i in $(seq 1 30); do
+    if warp-cli --accept-tos status &>/dev/null; then
+        break
+    fi
+    sleep 1
+done
+warp-cli --accept-tos registration delete 2>/dev/null || true
 sleep 1
 echo | warp-cli --accept-tos registration new
 warp-cli --accept-tos mode proxy
@@ -72,7 +84,7 @@ warp-cli --accept-tos connect
 echo "  Ожидаем WARP (до 30 сек)..."
 WARP_OK=0
 for i in $(seq 1 30); do
-    STATUS=$(warp-cli status 2>/dev/null | head -1)
+    STATUS=$(warp-cli --accept-tos status 2>/dev/null | head -1)
     if echo "$STATUS" | grep -qi "connected"; then
         echo "  ✓ WARP подключён (${i} сек)"
         WARP_OK=1
@@ -80,7 +92,7 @@ for i in $(seq 1 30); do
     fi
     if [ "$i" -eq 30 ]; then
         echo "  ✗ WARP не подключился!"
-        warp-cli status
+        warp-cli --accept-tos status
         exit 1
     fi
     sleep 1
@@ -154,38 +166,74 @@ grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf \
     || echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 
 # ── 6. Ключи и конфиг AWG ────────────────────────────────────
-echo "[6/8] Генерация ключей..."
 mkdir -p /etc/amnezia/amneziawg
 chmod 700 /etc/amnezia/amneziawg
-
-SERVER_PRIV=$(awg genkey)
-SERVER_PUB=$(echo "$SERVER_PRIV" | awg pubkey)
-CLIENT_PRIV=$(awg genkey)
-CLIENT_PUB=$(echo "$CLIENT_PRIV" | awg pubkey)
-CLIENT_IP="10.8.0.2"
-
-AWG_PORT=$(shuf -i 10000-65000 -n 1)
-AWG_JC=$(shuf -i 3-7 -n 1)
-AWG_JMIN=$(shuf -i 30-60 -n 1)
-AWG_JMAX=$(shuf -i 61-120 -n 1)
-AWG_S1=$(shuf -i 20-80 -n 1)
-AWG_S2=$(shuf -i 20-80 -n 1)
-AWG_H1=$(shuf -i 100000000-999999999 -n 1)
-AWG_H2=$(shuf -i 100000000-999999999 -n 1)
-AWG_H3=$(shuf -i 100000000-999999999 -n 1)
-AWG_H4=$(shuf -i 100000000-999999999 -n 1)
 
 EXT_IF=$(ip route | grep "^default" | awk '{print $5}' | head -1)
 SSH_PORT=$(ss -tlnp | grep sshd | awk '{print $4}' | rev | cut -d: -f1 | rev | head -1)
 SSH_PORT=${SSH_PORT:-22}
-SERVER_IP=$(curl -s --max-time 5 ifconfig.me || curl -s --max-time 5 api.ipify.org)
+SERVER_IP=$(curl -4 -s --max-time 5 ifconfig.me || curl -4 -s --max-time 5 api.ipify.org)
 
-echo "  Внешний интерфейс : $EXT_IF"
-echo "  SSH порт          : $SSH_PORT"
-echo "  Сервер IP         : $SERVER_IP"
-echo "  AWG порт          : $AWG_PORT"
+if [ -n "${RESTORE_CONF:-}" ]; then
+    echo "[6/8] Восстановление AWG из $RESTORE_CONF..."
+    if [ ! -f "$RESTORE_CONF" ]; then
+        echo "ОШИБКА: RESTORE_CONF не найден: $RESTORE_CONF" >&2
+        exit 1
+    fi
+    cp "$RESTORE_CONF" /etc/amnezia/amneziawg/awg0.conf
+    # Подставляем актуальный внешний интерфейс в MASQUERADE
+    sed -i -E "s/(-o )[a-zA-Z0-9._+-]+( -j MASQUERADE)/\1${EXT_IF}\2/g" \
+        /etc/amnezia/amneziawg/awg0.conf
+    chmod 600 /etc/amnezia/amneziawg/awg0.conf
 
-cat > /etc/amnezia/amneziawg/awg0.conf << EOF
+    AWG_PORT=$(awk '/^ListenPort/{print $3}' /etc/amnezia/amneziawg/awg0.conf)
+    AWG_JC=$(awk '/^Jc/{print $3}'   /etc/amnezia/amneziawg/awg0.conf)
+    AWG_JMIN=$(awk '/^Jmin/{print $3}' /etc/amnezia/amneziawg/awg0.conf)
+    AWG_JMAX=$(awk '/^Jmax/{print $3}' /etc/amnezia/amneziawg/awg0.conf)
+    AWG_S1=$(awk '/^S1/{print $3}'   /etc/amnezia/amneziawg/awg0.conf)
+    AWG_S2=$(awk '/^S2/{print $3}'   /etc/amnezia/amneziawg/awg0.conf)
+    AWG_H1=$(awk '/^H1/{print $3}'   /etc/amnezia/amneziawg/awg0.conf)
+    AWG_H2=$(awk '/^H2/{print $3}'   /etc/amnezia/amneziawg/awg0.conf)
+    AWG_H3=$(awk '/^H3/{print $3}'   /etc/amnezia/amneziawg/awg0.conf)
+    AWG_H4=$(awk '/^H4/{print $3}'   /etc/amnezia/amneziawg/awg0.conf)
+    SERVER_PRIV=$(awk '/^PrivateKey/{print $3; exit}' /etc/amnezia/amneziawg/awg0.conf)
+    SERVER_PUB=$(echo "$SERVER_PRIV" | awg pubkey)
+    CLIENT_IP=$(awk '/^AllowedIPs/{gsub(/\/.*/, "", $3); print $3; exit}' /etc/amnezia/amneziawg/awg0.conf)
+    CLIENT_IP="${CLIENT_IP:-10.8.0.2}"
+
+    if [ -n "${RESTORE_CLIENT_ENV:-}" ] && [ -f "$RESTORE_CLIENT_ENV" ]; then
+        NEW_SERVER_IP="$SERVER_IP"
+        # shellcheck disable=SC1090
+        set -a
+        # shellcheck source=/dev/null
+        source "$RESTORE_CLIENT_ENV"
+        set +a
+        SERVER_IP="$NEW_SERVER_IP"
+    fi
+    CLIENT_PRIV="${CLIENT_PRIV:-}"
+    if [ -z "$CLIENT_PRIV" ]; then
+        echo "  ⚠ CLIENT_PRIV нет (нужен RESTORE_CLIENT_ENV) — awg-client.env будет без ключа клиента"
+    fi
+else
+    echo "[6/8] Генерация ключей..."
+    SERVER_PRIV=$(awg genkey)
+    SERVER_PUB=$(echo "$SERVER_PRIV" | awg pubkey)
+    CLIENT_PRIV=$(awg genkey)
+    CLIENT_PUB=$(echo "$CLIENT_PRIV" | awg pubkey)
+    CLIENT_IP="10.8.0.2"
+
+    AWG_PORT=$(shuf -i 10000-65000 -n 1)
+    AWG_JC=$(shuf -i 3-7 -n 1)
+    AWG_JMIN=$(shuf -i 30-60 -n 1)
+    AWG_JMAX=$(shuf -i 61-120 -n 1)
+    AWG_S1=$(shuf -i 20-80 -n 1)
+    AWG_S2=$(shuf -i 20-80 -n 1)
+    AWG_H1=$(shuf -i 100000000-999999999 -n 1)
+    AWG_H2=$(shuf -i 100000000-999999999 -n 1)
+    AWG_H3=$(shuf -i 100000000-999999999 -n 1)
+    AWG_H4=$(shuf -i 100000000-999999999 -n 1)
+
+    cat > /etc/amnezia/amneziawg/awg0.conf << EOF
 [Interface]
 PrivateKey = $SERVER_PRIV
 Address = 10.8.0.1/24
@@ -209,7 +257,13 @@ PostDown = iptables -D FORWARD -i awg0 -j ACCEPT; iptables -D FORWARD -o awg0 -j
 PublicKey = $CLIENT_PUB
 AllowedIPs = $CLIENT_IP/32
 EOF
-chmod 600 /etc/amnezia/amneziawg/awg0.conf
+    chmod 600 /etc/amnezia/amneziawg/awg0.conf
+fi
+
+echo "  Внешний интерфейс : $EXT_IF"
+echo "  SSH порт          : $SSH_PORT"
+echo "  Сервер IP         : $SERVER_IP"
+echo "  AWG порт          : $AWG_PORT"
 
 # ── 7. Запуск AWG ─────────────────────────────────────────────
 echo "[7/8] Запуск AmneziaWG..."
@@ -249,7 +303,7 @@ echo "[8/8] Диагностика..."
 
 echo "  Ожидаем WARP connected + proxy (до 30 сек)..."
 for i in $(seq 1 30); do
-    STATUS=$(warp-cli status 2>/dev/null | head -1 || true)
+    STATUS=$(warp-cli --accept-tos status 2>/dev/null | head -1 || true)
     if echo "$STATUS" | grep -qi "connected"; then
         if nc -z 127.0.0.1 40001 2>/dev/null; then
             echo "  ✓ WARP ready (${i} сек)"
@@ -258,14 +312,14 @@ for i in $(seq 1 30); do
     fi
     if [ "$i" -eq 30 ]; then
         echo "  ✗ WARP не готов!"
-        warp-cli status
+        warp-cli --accept-tos status
     fi
     sleep 1
 done
 
 AWG_ST=$(systemctl is-active awg-quick@awg0 || true)
 T2S_ST=$(systemctl is-active tun2socks || true)
-WARP_ST=$(warp-cli status 2>/dev/null | head -1 || true)
+WARP_ST=$(warp-cli --accept-tos status 2>/dev/null | head -1 || true)
 WARP0_ST=$(ip link show warp0 2>/dev/null | grep -o "state [A-Z]*" || echo "не найден")
 
 echo ""
@@ -284,8 +338,8 @@ echo " table 100:"
 ip route show table 100 2>/dev/null || echo "  пусто"
 echo "---------------------------------------------------------"
 
-DIRECT_IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo "н/д")
-WARP_IP=$(curl -s --socks5 127.0.0.1:40001 --max-time 10 ifconfig.me 2>/dev/null || echo "НЕ ДОСТУПЕН")
+DIRECT_IP=$(curl -4 -s --max-time 5 ifconfig.me 2>/dev/null || echo "н/д")
+WARP_IP=$(curl -4 -s --socks5 127.0.0.1:40001 --max-time 10 ifconfig.me 2>/dev/null || echo "НЕ ДОСТУПЕН")
 printf "%-26s %s\n" "Прямой IP сервера:" "$DIRECT_IP"
 printf "%-26s %s\n" "IP через WARP:"     "$WARP_IP"
 echo "========================================================="
@@ -304,8 +358,28 @@ if [ "$ERRORS" -gt 0 ]; then
     exit 1
 fi
 
+# Машиночитаемый env для migrate-to.sh / клиента
+cat > /root/awg-client.env << EOF
+CLIENT_PRIV="$CLIENT_PRIV"
+SERVER_PUB="$SERVER_PUB"
+SERVER_IP="$SERVER_IP"
+CLIENT_IP="$CLIENT_IP"
+AWG_PORT="$AWG_PORT"
+AWG_JC="$AWG_JC"
+AWG_JMIN="$AWG_JMIN"
+AWG_JMAX="$AWG_JMAX"
+AWG_S1="$AWG_S1"
+AWG_S2="$AWG_S2"
+AWG_H1="$AWG_H1"
+AWG_H2="$AWG_H2"
+AWG_H3="$AWG_H3"
+AWG_H4="$AWG_H4"
+EOF
+chmod 600 /root/awg-client.env
+cp -a /etc/amnezia/amneziawg/awg0.conf /root/awg0.conf.backup
+
 echo ""
-echo "✓ Сервер готов. Запусти на клиенте:"
+echo "✓ Сервер готов. Env: /root/awg-client.env  Бэкап: /root/awg0.conf.backup"
 echo ""
 echo "  sudo CLIENT_PRIV=\"$CLIENT_PRIV\" \\"
 echo "       SERVER_PUB=\"$SERVER_PUB\" \\"

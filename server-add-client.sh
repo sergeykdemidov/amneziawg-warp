@@ -42,7 +42,7 @@ CLIENT_PUB=$(echo "$CLIENT_PRIV" | awg pubkey)
 
 SERVER_PRIV=$(awk '/^PrivateKey/{print $3}' "$CONF")
 SERVER_PUB=$(echo "$SERVER_PRIV" | awg pubkey)
-SERVER_IP=$(curl -s --max-time 5 ifconfig.me || curl -s --max-time 5 api.ipify.org)
+SERVER_IP=$(curl -4 -s --max-time 5 ifconfig.me || curl -4 -s --max-time 5 api.ipify.org)
 AWG_PORT=$(awk '/^ListenPort/{print $3}' "$CONF")
 AWG_JC=$(awk '/^Jc/{print $3}'   "$CONF")
 AWG_JMIN=$(awk '/^Jmin/{print $3}' "$CONF")
@@ -63,9 +63,28 @@ EOF
 
 awg set awg0 peer "$CLIENT_PUB" allowed-ips "$CLIENT_IP/32"
 
+cat > /root/awg-client.env << EOF
+CLIENT_PRIV="$CLIENT_PRIV"
+SERVER_PUB="$SERVER_PUB"
+SERVER_IP="$SERVER_IP"
+CLIENT_IP="$CLIENT_IP"
+AWG_PORT="$AWG_PORT"
+AWG_JC="$AWG_JC"
+AWG_JMIN="$AWG_JMIN"
+AWG_JMAX="$AWG_JMAX"
+AWG_S1="$AWG_S1"
+AWG_S2="$AWG_S2"
+AWG_H1="$AWG_H1"
+AWG_H2="$AWG_H2"
+AWG_H3="$AWG_H3"
+AWG_H4="$AWG_H4"
+EOF
+chmod 600 /root/awg-client.env
+
 echo ""
 echo "  ✓ Клиент добавлен: $CLIENT_IP"
 echo "  ✓ Пир зарегистрирован в awg0 (без перезапуска)"
+echo "  ✓ Env: /root/awg-client.env"
 echo ""
 echo "========================================================="
 echo " Запусти на клиентской машине:"

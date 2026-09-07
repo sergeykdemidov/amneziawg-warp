@@ -24,7 +24,7 @@ echo "  ✓ остановлено"
 echo "[2/4] Проверка WARP..."
 WARP_OK=0
 for i in $(seq 1 5); do
-    if warp-cli status 2>/dev/null | grep -qi "connected"; then
+    if warp-cli --accept-tos status 2>/dev/null | grep -qi "connected"; then
         WARP_OK=1
         break
     fi
@@ -35,7 +35,7 @@ if [ "$WARP_OK" -eq 0 ]; then
     echo "  WARP не подключён — переподключаем..."
     warp-cli --accept-tos connect
     for i in $(seq 1 30); do
-        if warp-cli status 2>/dev/null | grep -qi "connected"; then
+        if warp-cli --accept-tos status 2>/dev/null | grep -qi "connected"; then
             echo "  ✓ WARP подключён (${i} сек)"
             WARP_OK=1
             break
@@ -46,12 +46,12 @@ if [ "$WARP_OK" -eq 0 ]; then
             sleep 5
             warp-cli --accept-tos connect
             sleep 10
-            if warp-cli status 2>/dev/null | grep -qi "connected"; then
+            if warp-cli --accept-tos status 2>/dev/null | grep -qi "connected"; then
                 echo "  ✓ WARP подключён после рестарта сервиса"
                 WARP_OK=1
             else
                 echo "  ✗ WARP недоступен!"
-                warp-cli status
+                warp-cli --accept-tos status
                 exit 1
             fi
         fi
@@ -121,7 +121,7 @@ echo " СТАТУС"
 echo "========================================================="
 AWG_ST=$(systemctl is-active awg-quick@awg0 || true)
 T2S_ST=$(systemctl is-active tun2socks      || true)
-WARP_ST=$(warp-cli status 2>/dev/null | head -1 || true)
+WARP_ST=$(warp-cli --accept-tos status 2>/dev/null | head -1 || true)
 WARP0_ST=$(ip link show warp0 2>/dev/null | grep -o "state [A-Z]*" || echo "не найден")
 printf "%-26s %s\n" "awg-quick@awg0:"  "$AWG_ST"
 printf "%-26s %s\n" "tun2socks:"        "$T2S_ST"
